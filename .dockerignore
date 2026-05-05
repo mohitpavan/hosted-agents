@@ -1,0 +1,9 @@
+.playwright-remote/
+artifacts/
+node_modules/
+__pycache__/
+*.pyc
+.env
+.venv/
+.git/
+.azure/

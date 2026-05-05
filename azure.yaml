@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+
+requiredVersions:
+    extensions:
+        azure.ai.agents: '>=0.1.0-preview'
+name: async-browser-agent
+services:
+    async-browser-agent:
+        project: .
+        host: azure.ai.agent
+        language: python
+        config:
+            container:
+                resources:
+                    cpu: "1"
+                    memory: 2Gi
+            deployments:
+                - model:
+                    format: OpenAI
+                    name: gpt-4.1
+                    version: "2025-04-14"
+                  name: gpt-4.1
+                  sku:
+                    capacity: 1000
+                    name: GlobalStandard
+        startupCommand: python main.py

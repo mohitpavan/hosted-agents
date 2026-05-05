@@ -1,0 +1,19 @@
+{
+  "name": "async-browser-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Foundry hosted agent for async browser automation with live CDP streaming.",
+  "scripts": {
+    "check:playwright-cli": "playwright-cli --help"
+  },
+  "dependencies": {
+    "@playwright/cli": "latest"
+  },
+  "overrides": {
+    "playwright": "1.59.1",
+    "playwright-core": "1.59.1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
