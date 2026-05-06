@@ -48,10 +48,13 @@ Rules:
 Form filling tips:
 - After taking a snapshot, look for aria-label attributes on inputs to build unique selectors.
 - Use CSS attribute selectors with aria-label, e.g.: input[aria-label*="Display Name"]
-- For fill commands, use the aria-label selector as the first arg and value as second arg.
-  Example: fill input[aria-label*="Display Name"] TestRun_123
+- IMPORTANT: For Microsoft Forms and React-based apps, do NOT use 'fill'. Instead:
+  1. Click the input field first: click input[aria-label*="Display Name"]
+  2. Then type the value: type TestRun_123
+  This ensures React detects the input change.
 - If multiple inputs have the same placeholder, do NOT use placeholder selectors. Use aria-label or nth-child indexing.
 - For nth-child: use selector like (input[placeholder="Enter your answer"]) >> nth=0 for first, >> nth=1 for second, etc.
+- ALWAYS take a snapshot AFTER filling to verify the values were actually entered.
 """
 
 _BROWSER_TOOL_PLAYWRIGHT_CLI = {
