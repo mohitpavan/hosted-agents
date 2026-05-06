@@ -48,13 +48,12 @@ Rules:
 Form filling tips:
 - After taking a snapshot, look for aria-label attributes on inputs to build unique selectors.
 - Use CSS attribute selectors with aria-label, e.g.: input[aria-label*="Display Name"]
-- IMPORTANT: For Microsoft Forms and React-based apps, do NOT use 'fill'. Instead:
-  1. Click the input field first: click input[aria-label*="Display Name"]
-  2. Then type the value: type TestRun_123
-  This ensures React detects the input change.
-- If multiple inputs have the same placeholder, do NOT use placeholder selectors. Use aria-label or nth-child indexing.
-- For nth-child: use selector like (input[placeholder="Enter your answer"]) >> nth=0 for first, >> nth=1 for second, etc.
-- ALWAYS take a snapshot AFTER filling to verify the values were actually entered.
+- IMPORTANT: For Microsoft Forms and React-based apps, do NOT use 'fill' or direct value assignment.
+  Use this exact eval script to fill inputs reliably (replace VALUES array with actual values):
+  eval (function(){var inputs=document.querySelectorAll('input[type="text"]');var values=['VALUE1','VALUE2','VALUE3'];var setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;for(var i=0;i<Math.min(inputs.length,values.length);i++){setter.call(inputs[i],values[i]);inputs[i].dispatchEvent(new Event('input',{bubbles:true}));inputs[i].dispatchEvent(new Event('change',{bubbles:true}));}return 'filled '+inputs.length+' inputs'})()
+- After filling, take a snapshot to VERIFY values appear in the fields.
+- Only click Submit AFTER verifying the fields are filled in the snapshot.
+- If fields are empty after eval, try click on each input then type the value as fallback.
 """
 
 _BROWSER_TOOL_PLAYWRIGHT_CLI = {
