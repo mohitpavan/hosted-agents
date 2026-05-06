@@ -141,7 +141,7 @@ def _int_env(name: str, default: int) -> int:
 
 
 def _cli_mode() -> str:
-    return os.getenv("BROWSER_CLI_MODE", "playwright-cli").strip().lower()
+    return os.getenv("BROWSER_CLI_MODE", "browser-use").strip().lower()
 
 
 def _cli_mode_from_input(user_input: str) -> str:

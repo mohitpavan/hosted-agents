@@ -31,4 +31,4 @@ environment_variables:
     - name: AZURE_PLAYWRIGHT_SERVICE_ACCESS_TOKEN
       value: ${AZURE_PLAYWRIGHT_SERVICE_ACCESS_TOKEN}
     - name: BROWSER_CLI_MODE
-      value: playwright-cli
+      value: browser-use
