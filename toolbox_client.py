@@ -19,15 +19,19 @@ logger = logging.getLogger(__name__)
 
 _FOUNDRY_ENDPOINT = os.getenv("FOUNDRY_PROJECT_ENDPOINT", "")
 _TOOLBOX_NAME = os.getenv("TOOLBOX_NAME", "")
+_TOOLBOX_VERSION = os.getenv("TOOLBOX_VERSION", "")
 
 # Construct Toolbox URL from project endpoint + toolbox name (official pattern),
 # or fall back to explicit TOOLBOX_MCP_ENDPOINT for local testing.
 if _TOOLBOX_NAME and _FOUNDRY_ENDPOINT:
-    TOOLBOX_ENDPOINT = f"{_FOUNDRY_ENDPOINT.rstrip('/')}/toolboxes/{_TOOLBOX_NAME}/mcp?api-version=v1"
+    _base = f"{_FOUNDRY_ENDPOINT.rstrip('/')}/toolboxes/{_TOOLBOX_NAME}"
+    if _TOOLBOX_VERSION:
+        _base += f"/versions/{_TOOLBOX_VERSION}"
+    TOOLBOX_ENDPOINT = f"{_base}/mcp?api-version=v1"
 else:
     TOOLBOX_ENDPOINT = os.getenv(
         "TOOLBOX_MCP_ENDPOINT",
-        "https://kumarmoh-7290-resource.services.ai.azure.com/api/projects/kumarmoh-7290/toolboxes/Mohit-toolbox/mcp?api-version=v1",
+        "https://cnt-test-gblmitsha-cin-aif.services.ai.azure.com/api/projects/cnt-test-gblmitsha-cin-proj/toolboxes/Mohit-ttoolbox/versions/5/mcp?api-version=v1",
     )
 TEST_RUN_ID = "a462f60b-7b09-4a4f-9cb5-1d08a4c4103f"
 TOOLBOX_TIMEOUT_SECONDS = int(os.getenv("TOOLBOX_TIMEOUT_SECONDS", "60"))
@@ -113,8 +117,8 @@ class ToolboxClient:
                     "id": self._next_id(),
                     "method": "tools/call",
                     "params": {
-                        "name": "MohitMiOpenAPI",
-                        "arguments": {"testRunId": TEST_RUN_ID},
+                        "name": "MohitMiOpenAPI.GetTestRun",
+                        "arguments": {"test-run": TEST_RUN_ID},
                     },
                 },
             )

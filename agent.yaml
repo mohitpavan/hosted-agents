@@ -36,3 +36,5 @@ environment_variables:
       value: ${MCP_TIMEOUT_SECONDS}
     - name: TOOLBOX_NAME
       value: ${TOOLBOX_NAME}
+    - name: TOOLBOX_VERSION
+      value: ${TOOLBOX_VERSION}
