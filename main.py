@@ -48,12 +48,17 @@ Rules:
 Form filling tips:
 - After taking a snapshot, look for aria-label attributes on inputs to build unique selectors.
 - Use CSS attribute selectors with aria-label, e.g.: input[aria-label*="Display Name"]
-- IMPORTANT: For Microsoft Forms and React-based apps, do NOT use 'fill' or direct value assignment.
-  Use this exact eval script to fill inputs reliably (replace VALUES array with actual values):
-  eval (function(){var inputs=document.querySelectorAll('input[type="text"]');var values=['VALUE1','VALUE2','VALUE3'];var setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;for(var i=0;i<Math.min(inputs.length,values.length);i++){setter.call(inputs[i],values[i]);inputs[i].dispatchEvent(new Event('input',{bubbles:true}));inputs[i].dispatchEvent(new Event('change',{bubbles:true}));}return 'filled '+inputs.length+' inputs'})()
+- IMPORTANT: For Microsoft Forms and React-based apps, do NOT use fill or direct value setting.
+  Instead, for EACH field: click on the input, then use type to enter the value keystroke by keystroke.
+  Example sequence for 3 fields:
+    1. click input[aria-label*="Display Name"]
+    2. type TestRun_4/13/2026_3:15:32 PM
+    3. click input[aria-label*="Id"]
+    4. type a462f60b-7b09-4a4f-9cb5-1d08a4c4103f
+    5. click input[aria-label*="Created By"]
+    6. type kumarmoh@microsoft.com
 - After filling, take a snapshot to VERIFY values appear in the fields.
-- Only click Submit AFTER verifying the fields are filled in the snapshot.
-- If fields are empty after eval, try click on each input then type the value as fallback.
+- Only click Submit AFTER verifying the fields show the correct values.
 """
 
 _BROWSER_TOOL_PLAYWRIGHT_CLI = {
