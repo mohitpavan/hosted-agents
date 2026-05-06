@@ -2,15 +2,17 @@
 kind: hosted
 name: async-browser-agent
 description: |
-    A Foundry-hosted async browser automation agent that streams the CDP URL
-    for live viewing, then executes browser commands while the user watches.
+    Foundry-hosted async browser automation agent that streams CDP URL for live viewing,
+    fetches test-run metadata from Toolbox for form filling, and executes browser commands
+    via playwright-cli or browser-use (selected per-prompt).
 metadata:
     tags:
-        - Browser Automation
-        - Azure Playwright Service
-        - Streaming
-        - CDP Live View
+        - AI Agent Hosting
         - Responses Protocol
+        - Bring Your Own
+        - Browser Automation
+        - Toolbox
+        - Python
 protocols:
     - protocol: responses
       version: 1.0.0
@@ -19,22 +21,14 @@ resources:
     memory: 2Gi
 environment_variables:
     - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
-      value: ${AZURE_AI_MODEL_DEPLOYMENT_NAME}
+      value: gpt-4.1
+    - name: TOOLBOX_NAME
+      value: Mohit-ttoolbox
+    - name: TOOLBOX_VERSION
+      value: "5"
     - name: AZURE_PLAYWRIGHT_SERVICE_URL
       value: ${AZURE_PLAYWRIGHT_SERVICE_URL}
     - name: AZURE_PLAYWRIGHT_SERVICE_ACCESS_TOKEN
       value: ${AZURE_PLAYWRIGHT_SERVICE_ACCESS_TOKEN}
     - name: BROWSER_CLI_MODE
-      value: ${BROWSER_CLI_MODE}
-    - name: BROWSER_COMMAND_TIMEOUT_SECONDS
-      value: ${BROWSER_COMMAND_TIMEOUT_SECONDS}
-    - name: BROWSER_MAX_COMMANDS
-      value: ${BROWSER_MAX_COMMANDS}
-    - name: BROWSER_MAX_OUTPUT_CHARS
-      value: ${BROWSER_MAX_OUTPUT_CHARS}
-    - name: MCP_TIMEOUT_SECONDS
-      value: ${MCP_TIMEOUT_SECONDS}
-    - name: TOOLBOX_NAME
-      value: ${TOOLBOX_NAME}
-    - name: TOOLBOX_VERSION
-      value: ${TOOLBOX_VERSION}
+      value: playwright-cli

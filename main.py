@@ -44,6 +44,14 @@ Rules:
 - If the user asks you to fill a form, call get_test_run_metadata FIRST to get metadata.
   If the result has a displayName field, use it to fill the display name / name field in the form.
   Use any other relevant fields from the metadata to fill other form fields.
+
+Form filling tips:
+- After taking a snapshot, look for aria-label attributes on inputs to build unique selectors.
+- Use CSS attribute selectors with aria-label, e.g.: input[aria-label*="Display Name"]
+- For fill commands, use the aria-label selector as the first arg and value as second arg.
+  Example: fill input[aria-label*="Display Name"] TestRun_123
+- If multiple inputs have the same placeholder, do NOT use placeholder selectors. Use aria-label or nth-child indexing.
+- For nth-child: use selector like (input[placeholder="Enter your answer"]) >> nth=0 for first, >> nth=1 for second, etc.
 """
 
 _BROWSER_TOOL_PLAYWRIGHT_CLI = {
@@ -129,8 +137,19 @@ def _cli_mode() -> str:
     return os.getenv("BROWSER_CLI_MODE", "playwright-cli").strip().lower()
 
 
-def _get_tool_definitions() -> list[dict]:
-    if _cli_mode() == "browser-use":
+def _cli_mode_from_input(user_input: str) -> str:
+    """Detect CLI mode from user prompt, falling back to env var."""
+    lower = user_input.lower()
+    if "browser-use" in lower or "browser use" in lower:
+        return "browser-use"
+    if "playwright" in lower:
+        return "playwright-cli"
+    return _cli_mode()
+
+
+def _get_tool_definitions(cli_mode: str = None) -> list[dict]:
+    mode = cli_mode or _cli_mode()
+    if mode == "browser-use":
         return [_BROWSER_TOOL_BROWSER_USE, _TEST_RUN_METADATA_TOOL]
     return [_BROWSER_TOOL_PLAYWRIGHT_CLI, _TEST_RUN_METADATA_TOOL]
 
@@ -168,7 +187,7 @@ async def handler(
     user_input = await context.get_input_text() or "Hello!"
     history = await context.get_history()
     session_id = f"session-{uuid.uuid4().hex[:12]}"
-    cli_mode = _cli_mode()
+    cli_mode = _cli_mode_from_input(user_input)
     max_commands = _int_env("BROWSER_MAX_COMMANDS", 24)
 
     logger.info("Request %s: cli=%s session=%s", context.response_id, cli_mode, session_id)
@@ -202,7 +221,7 @@ async def handler(
             # Phase 4: Model tool loop
             responses, model = _responses_client()
             input_items = _build_input(user_input, history)
-            tools = _get_tool_definitions()
+            tools = _get_tool_definitions(cli_mode)
 
             response = await asyncio.get_running_loop().run_in_executor(
                 None,

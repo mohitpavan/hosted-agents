@@ -3,12 +3,14 @@
 requiredVersions:
     extensions:
         azure.ai.agents: '>=0.1.0-preview'
-name: async-browser-agent
+name: ai-foundry-starter-basic
 services:
     async-browser-agent:
         project: .
         host: azure.ai.agent
-        language: python
+        language: docker
+        docker:
+            remoteBuild: true
         config:
             container:
                 resources:
@@ -21,6 +23,9 @@ services:
                     version: "2025-04-14"
                   name: gpt-4.1
                   sku:
-                    capacity: 1000
+                    capacity: 4150
                     name: GlobalStandard
-        startupCommand: python main.py
+            startupCommand: python main.py
+infra:
+    provider: bicep
+    path: ./infra
