@@ -25,7 +25,7 @@ TEST_RUN_ID = "a462f60b-7b09-4a4f-9cb5-1d08a4c4103f"
 TOOLBOX_TIMEOUT_SECONDS = int(os.getenv("TOOLBOX_TIMEOUT_SECONDS", "60"))
 
 # Scope for Azure AI Services
-_TOKEN_SCOPE = "https://ai.azure.com/.default"
+_TOKEN_SCOPE = "https://cnt-prod.loadtesting.azure.com/.default"
 
 
 class ToolboxClient:
