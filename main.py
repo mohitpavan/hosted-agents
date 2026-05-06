@@ -220,7 +220,9 @@ async def handler(
             logger.info("Connecting %s to CDP session %s", cli_mode, session_id)
             connect_result = executor.connect(cdp_url)
             if not connect_result["success"]:
-                yield f"❌ Failed to connect browser CLI: {connect_result.get('error', 'unknown')}\n"
+                err_detail = connect_result.get('stderr') or connect_result.get('stdout') or 'unknown'
+                logger.error("Connect failed: %s", connect_result)
+                yield f"❌ Failed to connect browser CLI: {err_detail}\n"
                 return
 
             yield "✅ Browser connected. Working on your request...\n\n"
