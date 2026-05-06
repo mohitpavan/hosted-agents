@@ -46,19 +46,13 @@ Rules:
   Use any other relevant fields from the metadata to fill other form fields.
 
 Form filling tips:
-- After taking a snapshot, look for aria-label attributes on inputs to build unique selectors.
-- Use CSS attribute selectors with aria-label, e.g.: input[aria-label*="Display Name"]
-- IMPORTANT: For Microsoft Forms and React-based apps, do NOT use fill or direct value setting.
-  Instead, for EACH field: click on the input, then use type to enter the value keystroke by keystroke.
-  Example sequence for 3 fields:
-    1. click input[aria-label*="Display Name"]
-    2. type TestRun_4/13/2026_3:15:32 PM
-    3. click input[aria-label*="Id"]
-    4. type a462f60b-7b09-4a4f-9cb5-1d08a4c4103f
-    5. click input[aria-label*="Created By"]
-    6. type kumarmoh@microsoft.com
-- After filling, take a snapshot to VERIFY values appear in the fields.
-- Only click Submit AFTER verifying the fields show the correct values.
+- After taking a snapshot, identify input fields.
+- To fill form fields reliably on ANY web app (Google Forms, MS Forms, React apps), use this eval pattern:
+  eval (function(){var s=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;var t=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set;var fields=document.querySelectorAll('input[type="text"],textarea');var vals=['VALUE1','VALUE2','VALUE3'];for(var i=0;i<Math.min(fields.length,vals.length);i++){var f=fields[i];var setter=f.tagName==='TEXTAREA'?t:s;setter.call(f,vals[i]);f.dispatchEvent(new Event('input',{bubbles:true}));f.dispatchEvent(new Event('change',{bubbles:true}));}return 'filled'})()
+  Replace VALUE1, VALUE2, VALUE3 with the actual metadata values.
+- Do NOT use input.value = x directly. Do NOT use the input command. Always use the eval pattern above.
+- After filling, take a screenshot to VERIFY values appear.
+- Only click Submit AFTER verifying fields show correct values in the screenshot.
 """
 
 _BROWSER_TOOL_PLAYWRIGHT_CLI = {
