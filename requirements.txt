@@ -1,5 +1,6 @@
 azure-ai-agentserver-responses==1.0.0b5
 azure-ai-projects==2.0.1
 azure-identity==1.25.3
+httpx>=0.27.0
 mcp>=1.0.0
 browser-use>=0.12.6

@@ -1,19 +1,19 @@
-"""Toolbox MCP client — connects to Azure Foundry Toolbox endpoint via SSE.
+"""Toolbox MCP client — connects to Azure Foundry Toolbox endpoint via HTTP JSON-RPC.
 
 Uses DefaultAzureCredential (PMI) for authentication. Calls the MohitMiOpenAPI
 tool to fetch test-run metadata when needed for form-filling tasks.
+
+Based on the official foundry-samples bring-your-own-toolbox pattern.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
 from typing import Any
 
-from azure.identity import DefaultAzureCredential
-from mcp import ClientSession
-from mcp.client.sse import sse_client
+import httpx
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 
 logger = logging.getLogger(__name__)
 
@@ -24,82 +24,112 @@ TOOLBOX_ENDPOINT = os.getenv(
 TEST_RUN_ID = "a462f60b-7b09-4a4f-9cb5-1d08a4c4103f"
 TOOLBOX_TIMEOUT_SECONDS = int(os.getenv("TOOLBOX_TIMEOUT_SECONDS", "60"))
 
-# Scope for Azure AI Services
 # Scope to authenticate to the Toolbox MCP endpoint itself
 # (Toolbox handles downstream API auth internally)
 _TOKEN_SCOPE = "https://ai.azure.com/.default"
 
+# Feature-flag header
+_TOOLBOX_FEATURES = os.getenv("FOUNDRY_AGENT_TOOLBOX_FEATURES", "Toolboxes=V1Preview")
+
 
 class ToolboxClient:
-    """Connects to the Foundry Toolbox MCP endpoint via SSE with PMI auth."""
+    """Connects to the Foundry Toolbox MCP endpoint via HTTP JSON-RPC with PMI auth."""
 
     def __init__(self) -> None:
         self._credential = DefaultAzureCredential()
-        self._session: ClientSession | None = None
-        self._context_manager: Any = None
+        self._token_provider = get_bearer_token_provider(self._credential, _TOKEN_SCOPE)
+        self._session_id: str | None = None
+        self._req_id = 0
+        self._initialized = False
 
-    def _get_token(self) -> str:
-        token = self._credential.get_token(_TOKEN_SCOPE)
-        return token.token
+    def _headers(self) -> dict:
+        h = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self._token_provider()}",
+        }
+        if _TOOLBOX_FEATURES:
+            h["Foundry-Features"] = _TOOLBOX_FEATURES
+        if self._session_id:
+            h["mcp-session-id"] = self._session_id
+        return h
 
-    async def _ensure_session(self) -> ClientSession:
-        if self._session is not None:
-            return self._session
+    def _next_id(self) -> int:
+        self._req_id += 1
+        return self._req_id
 
-        token = await asyncio.get_running_loop().run_in_executor(
-            None, self._get_token
-        )
-        headers = {"Authorization": f"Bearer {token}"}
+    def _ensure_initialized(self) -> None:
+        """Send MCP initialize + initialized notification (once)."""
+        if self._initialized:
+            return
 
-        self._context_manager = sse_client(
-            url=TOOLBOX_ENDPOINT,
-            headers=headers,
-        )
-        read_stream, write_stream = await self._context_manager.__aenter__()
+        with httpx.Client(timeout=TOOLBOX_TIMEOUT_SECONDS) as client:
+            resp = client.post(
+                TOOLBOX_ENDPOINT,
+                headers=self._headers(),
+                json={
+                    "jsonrpc": "2.0",
+                    "id": self._next_id(),
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": {"name": "async-browser-agent", "version": "1.0.0"},
+                    },
+                },
+            )
+            resp.raise_for_status()
+            self._session_id = resp.headers.get("mcp-session-id")
+            data = resp.json()
+            server_name = data.get("result", {}).get("serverInfo", {}).get("name", "unknown")
+            logger.info("Toolbox initialized: server=%s session=%s", server_name, self._session_id)
 
-        self._session = ClientSession(read_stream, write_stream)
-        await self._session.__aenter__()
-        await self._session.initialize()
-        logger.info("Toolbox MCP session initialized at %s", TOOLBOX_ENDPOINT)
-        return self._session
+            # Send initialized notification
+            client.post(
+                TOOLBOX_ENDPOINT,
+                headers=self._headers(),
+                json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+            )
 
-    async def get_test_run(self) -> dict[str, Any]:
+        self._initialized = True
+
+    def get_test_run(self) -> dict[str, Any]:
         """Call MohitMiOpenAPI to get test-run metadata."""
-        session = await self._ensure_session()
-        result = await asyncio.wait_for(
-            session.call_tool(
-                "MohitMiOpenAPI",
-                {"testRunId": TEST_RUN_ID},
-            ),
-            timeout=TOOLBOX_TIMEOUT_SECONDS,
-        )
+        self._ensure_initialized()
 
-        text_parts = [
-            getattr(item, "text", "") for item in result.content if getattr(item, "text", None)
-        ]
-        text = "\n".join(text_parts)
-
-        if result.isError:
-            raise RuntimeError(f"Toolbox MohitMiOpenAPI failed: {text}")
+        with httpx.Client(timeout=TOOLBOX_TIMEOUT_SECONDS) as client:
+            resp = client.post(
+                TOOLBOX_ENDPOINT,
+                headers=self._headers(),
+                json={
+                    "jsonrpc": "2.0",
+                    "id": self._next_id(),
+                    "method": "tools/call",
+                    "params": {
+                        "name": "MohitMiOpenAPI",
+                        "arguments": {"testRunId": TEST_RUN_ID},
+                    },
+                },
+            )
+            resp.raise_for_status()
+            result = resp.json().get("result", {})
+            content = result.get("content", [])
+            texts = []
+            for c in content:
+                if isinstance(c, dict):
+                    if c.get("type") == "text" and c.get("text"):
+                        texts.append(c["text"])
+                    elif c.get("type") == "resource":
+                        resource = c.get("resource", {})
+                        if resource.get("text"):
+                            texts.append(resource["text"])
+            text = "\n".join(texts) if texts else json.dumps(result)
 
         try:
             return json.loads(text)
         except json.JSONDecodeError:
-            # Return raw text if not JSON
             return {"raw": text}
 
     async def shutdown(self) -> None:
-        """Close the Toolbox MCP session."""
-        if self._session is not None:
-            try:
-                await self._session.__aexit__(None, None, None)
-            except Exception:
-                pass
-            self._session = None
-
-        if self._context_manager is not None:
-            try:
-                await self._context_manager.__aexit__(None, None, None)
-            except Exception:
-                pass
-            self._context_manager = None
+        """No persistent connection to close — httpx is per-request."""
+        self._initialized = False
+        self._session_id = None

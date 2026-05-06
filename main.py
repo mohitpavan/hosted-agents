@@ -231,7 +231,9 @@ async def handler(
 
                     if tool_name == "get_test_run_metadata":
                         try:
-                            metadata = await toolbox_client.get_test_run()
+                            metadata = await asyncio.get_running_loop().run_in_executor(
+                                None, toolbox_client.get_test_run
+                            )
                             yield f"📋 Fetched test-run metadata (displayName: `{metadata.get('displayName', 'N/A')}`)\n"
                             tool_outputs.append({
                                 "type": "function_call_output",
