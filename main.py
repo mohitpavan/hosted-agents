@@ -23,6 +23,7 @@ from azure.identity import DefaultAzureCredential
 
 from browser_executor import BrowserExecutor, BrowserExecutorError
 from mcp_client import McpBrowserClient
+from toolbox_client import ToolboxClient
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -40,6 +41,9 @@ Rules:
 - Keep command sequences short and purposeful.
 - Summarize what happened and report results clearly.
 - Do not reveal credentials, remote endpoint values, or access tokens.
+- If the user asks you to fill a form, call get_test_run_metadata FIRST to get metadata.
+  If the result has a displayName field, use it to fill the display name / name field in the form.
+  Use any other relevant fields from the metadata to fill other form fields.
 """
 
 _BROWSER_TOOL_PLAYWRIGHT_CLI = {
@@ -90,6 +94,19 @@ _BROWSER_TOOL_BROWSER_USE = {
     "strict": False,
 }
 
+_TEST_RUN_METADATA_TOOL = {
+    "type": "function",
+    "name": "get_test_run_metadata",
+    "description": "Fetch test-run metadata from the Toolbox API. Use this when you need data to fill forms (e.g. displayName, status, etc.). Returns a JSON object with test-run fields.",
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": False,
+    },
+    "strict": False,
+}
+
 app = ResponsesAgentServerHost(options=ResponsesServerOptions(default_fetch_history_count=20))
 
 
@@ -112,10 +129,10 @@ def _cli_mode() -> str:
     return os.getenv("BROWSER_CLI_MODE", "playwright-cli").strip().lower()
 
 
-def _get_tool_definition() -> dict:
+def _get_tool_definitions() -> list[dict]:
     if _cli_mode() == "browser-use":
-        return _BROWSER_TOOL_BROWSER_USE
-    return _BROWSER_TOOL_PLAYWRIGHT_CLI
+        return [_BROWSER_TOOL_BROWSER_USE, _TEST_RUN_METADATA_TOOL]
+    return [_BROWSER_TOOL_PLAYWRIGHT_CLI, _TEST_RUN_METADATA_TOOL]
 
 
 def _responses_client() -> tuple[Any, str]:
@@ -158,6 +175,7 @@ async def handler(
 
     mcp_client = McpBrowserClient()
     executor = BrowserExecutor(cli_mode=cli_mode, session_id=session_id)
+    toolbox_client = ToolboxClient()
 
     async def stream_response():
         try:
@@ -184,7 +202,7 @@ async def handler(
             # Phase 4: Model tool loop
             responses, model = _responses_client()
             input_items = _build_input(user_input, history)
-            tool_def = _get_tool_definition()
+            tools = _get_tool_definitions()
 
             response = await asyncio.get_running_loop().run_in_executor(
                 None,
@@ -192,7 +210,7 @@ async def handler(
                     model=model,
                     instructions=_SYSTEM_PROMPT,
                     input=input_items,
-                    tools=[tool_def],
+                    tools=tools,
                 ),
             )
 
@@ -209,28 +227,47 @@ async def handler(
 
                 tool_outputs = []
                 for call in calls:
-                    if getattr(call, "name", "") != "run_browser_command":
+                    tool_name = getattr(call, "name", "")
+
+                    if tool_name == "get_test_run_metadata":
+                        try:
+                            metadata = await toolbox_client.get_test_run()
+                            yield f"📋 Fetched test-run metadata (displayName: `{metadata.get('displayName', 'N/A')}`)\n"
+                            tool_outputs.append({
+                                "type": "function_call_output",
+                                "call_id": call.call_id,
+                                "output": json.dumps(metadata),
+                            })
+                        except Exception as toolbox_err:
+                            logger.warning("Toolbox call failed: %s", toolbox_err)
+                            tool_outputs.append({
+                                "type": "function_call_output",
+                                "call_id": call.call_id,
+                                "output": json.dumps({"success": False, "error": str(toolbox_err)}),
+                            })
+
+                    elif tool_name == "run_browser_command":
+                        try:
+                            args = json.loads(call.arguments or "{}")
+                            command = args.get("command", "")
+                            command_args = args.get("args") or []
+                            result = executor.run_command(command, command_args)
+                            yield f"🔧 `{command} {' '.join(command_args[:3])}`\n"
+                        except (json.JSONDecodeError, BrowserExecutorError) as error:
+                            result = {"success": False, "error": str(error)}
+
                         tool_outputs.append({
                             "type": "function_call_output",
                             "call_id": call.call_id,
-                            "output": json.dumps({"success": False, "error": "Unknown tool"}),
+                            "output": json.dumps(result),
                         })
-                        continue
 
-                    try:
-                        args = json.loads(call.arguments or "{}")
-                        command = args.get("command", "")
-                        command_args = args.get("args") or []
-                        result = executor.run_command(command, command_args)
-                        yield f"🔧 `{command} {' '.join(command_args[:3])}`\n"
-                    except (json.JSONDecodeError, BrowserExecutorError) as error:
-                        result = {"success": False, "error": str(error)}
-
-                    tool_outputs.append({
-                        "type": "function_call_output",
-                        "call_id": call.call_id,
-                        "output": json.dumps(result),
-                    })
+                    else:
+                        tool_outputs.append({
+                            "type": "function_call_output",
+                            "call_id": call.call_id,
+                            "output": json.dumps({"success": False, "error": f"Unknown tool: {tool_name}"}),
+                        })
 
                 response = await asyncio.get_running_loop().run_in_executor(
                     None,
@@ -238,7 +275,7 @@ async def handler(
                         model=model,
                         previous_response_id=response.id,
                         input=tool_outputs,
-                        tools=[tool_def],
+                        tools=tools,
                     ),
                 )
 
@@ -260,6 +297,11 @@ async def handler(
                 await mcp_client.end_browser_session(session_id)
             except Exception as end_error:
                 logger.warning("MCP end_browser_session failed: %s", end_error)
+
+            try:
+                await toolbox_client.shutdown()
+            except Exception as tb_error:
+                logger.warning("Toolbox shutdown failed: %s", tb_error)
 
             await mcp_client.shutdown()
             logger.info("Session %s cleaned up", session_id)
