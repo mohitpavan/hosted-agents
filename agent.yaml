@@ -34,3 +34,5 @@ environment_variables:
       value: ${BROWSER_MAX_OUTPUT_CHARS}
     - name: MCP_TIMEOUT_SECONDS
       value: ${MCP_TIMEOUT_SECONDS}
+    - name: TOOLBOX_NAME
+      value: ${TOOLBOX_NAME}

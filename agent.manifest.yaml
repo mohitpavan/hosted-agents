@@ -1,0 +1,45 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/microsoft/AgentSchema/refs/heads/main/schemas/v1.0/AgentManifest.yaml
+name: async-browser-agent
+displayName: "Async Browser Agent"
+description: >
+  Foundry-hosted async browser automation agent that streams CDP URL for live
+  viewing, fetches test-run metadata from Toolbox for form filling, and executes
+  browser commands via playwright-cli or browser-use.
+metadata:
+  tags:
+    - AI Agent Hosting
+    - Responses Protocol
+    - Bring Your Own
+    - Browser Automation
+    - Toolbox
+    - Python
+template:
+  name: async-browser-agent
+  kind: hosted
+  protocols:
+    - protocol: responses
+      version: 1.0.0
+  environment_variables:
+    # FOUNDRY_PROJECT_ENDPOINT and APPLICATIONINSIGHTS_CONNECTION_STRING
+    # are injected by the platform — do NOT declare them here.
+    - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
+      value: "{{AZURE_AI_MODEL_DEPLOYMENT_NAME}}"
+    - name: TOOLBOX_NAME
+      value: "Mohit-toolbox"
+    - name: AZURE_PLAYWRIGHT_SERVICE_URL
+      value: "{{AZURE_PLAYWRIGHT_SERVICE_URL}}"
+    - name: AZURE_PLAYWRIGHT_SERVICE_ACCESS_TOKEN
+      value: "{{AZURE_PLAYWRIGHT_SERVICE_ACCESS_TOKEN}}"
+    - name: BROWSER_CLI_MODE
+      value: "playwright-cli"
+resources:
+  - kind: model
+    id: gpt-4.1
+    name: AZURE_AI_MODEL_DEPLOYMENT_NAME
+  - kind: toolbox
+    name: Mohit-toolbox
+    tools:
+      - type: openapi
+        name: MohitMiOpenAPI
+parameters:
+  properties: []
