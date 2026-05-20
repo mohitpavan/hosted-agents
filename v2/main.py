@@ -72,10 +72,11 @@ You help users complete browser automation tasks by calling the run_browser_comm
 A remote Chromium browser session has already been created and connected for you via playwright-cli.
 
 Rules:
-- The browser is already open. Use state first to see the current page.
-- Use open for navigation to URLs.
+- ALWAYS use `open` to navigate to a URL before doing anything else.
+- Execute ONE command at a time. Do NOT call multiple tool commands in parallel.
+- If the user asks about multiple URLs, handle them sequentially (open first URL, extract info, then open second URL, extract info).
 - Use state to discover element indices before interacting (click, input, etc.).
-- Use screenshot for visual proof.
+- Use screenshot for visual proof when needed.
 - Keep command sequences short and purposeful.
 - Summarize what happened and report results clearly.
 - Do not reveal credentials, remote endpoint values, or access tokens.
@@ -160,13 +161,16 @@ class _BrowserSession:
         self.cdp_url: str | None = None
         self.executor: BrowserExecutor | None = None
         self.live_view_url: str | None = None
+        self.consecutive_failures: int = 0
 
     def is_alive(self) -> bool:
         """Check if the session is still usable."""
         if not self.active or not self.executor:
             return False
-        # Trust active flag — session stays valid for container lifetime
-        # If it actually died, the next command will fail and trigger reset
+        # Too many consecutive failures means session is dead
+        if self.consecutive_failures >= 3:
+            logger.info("Session %s has %d consecutive failures, marking dead", self.session_id, self.consecutive_failures)
+            return False
         return True
 
     def reset(self):
@@ -175,6 +179,7 @@ class _BrowserSession:
         self.cdp_url = None
         self.executor = None
         self.live_view_url = None
+        self.consecutive_failures = 0
 
 
 # Active sessions keyed by session_id — supports multiple concurrent sessions
@@ -305,8 +310,14 @@ async def handler(
                             result = executor.run_command(command, command_args)
                             if verbose:
                                 yield f"🔧 `{command} {' '.join(command_args[:3])}`\n"
+                            # Track success/failure for session health
+                            if result.get("success"):
+                                session.consecutive_failures = 0
+                            else:
+                                session.consecutive_failures += 1
                         except (json.JSONDecodeError, BrowserExecutorError) as error:
                             result = {"success": False, "error": str(error)}
+                            session.consecutive_failures += 1
 
                         tool_outputs.append({
                             "type": "function_call_output",
