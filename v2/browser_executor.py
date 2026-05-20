@@ -17,7 +17,6 @@ PLAYWRIGHT_CLI_COMMANDS = {
     "type", "input", "keys", "select", "upload",
     "scroll", "back", "eval",
     "tab", "get", "wait",
-    "close",
 }
 
 TOKEN_PATTERNS = [
