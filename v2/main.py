@@ -34,6 +34,9 @@ from toolbox_client import ToolboxClient
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
+# Verbose streaming: show tool calls in agent output (set to "false" to suppress)
+_VERBOSE_STREAM = os.getenv("BROWSER_VERBOSE", "true").lower() in ("true", "1", "yes")
+
 
 _MI_TOKEN_DEBUG = ""
 
@@ -146,6 +149,46 @@ def _function_calls(response: Any) -> list[Any]:
     return [item for item in getattr(response, "output", []) if getattr(item, "type", None) == "function_call"]
 
 
+# ─── Persistent browser session (shared across requests within container lifetime) ───
+
+class _BrowserSession:
+    """Holds state for a single browser session."""
+
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+        self.active = False
+        self.cdp_url: str | None = None
+        self.executor: BrowserExecutor | None = None
+        self.live_view_url: str | None = None
+
+    def is_alive(self) -> bool:
+        """Check if the session is still usable."""
+        if not self.active or not self.executor:
+            return False
+        # Trust active flag — session stays valid for container lifetime
+        # If it actually died, the next command will fail and trigger reset
+        return True
+
+    def reset(self):
+        """Mark session as inactive."""
+        self.active = False
+        self.cdp_url = None
+        self.executor = None
+        self.live_view_url = None
+
+
+# Active sessions keyed by session_id — supports multiple concurrent sessions
+_sessions: dict[str, _BrowserSession] = {}
+
+
+def _get_or_create_session_id() -> str:
+    """Reuse existing session if one is alive, otherwise generate a new ID."""
+    for sid, s in _sessions.items():
+        if s.active and s.is_alive():
+            return sid
+    return f"session-{uuid.uuid4().hex[:8]}"
+
+
 @app.response_handler
 async def handler(
     request: CreateResponse,
@@ -154,51 +197,79 @@ async def handler(
 ):
     user_input = await context.get_input_text() or "Hello!"
     history = await context.get_history()
-    session_id = f"session-{uuid.uuid4().hex[:12]}"
     max_commands = _int_env("BROWSER_MAX_COMMANDS", 24)
 
-    logger.info("Request %s: session=%s", context.response_id, session_id)
+    # Per-request verbose override: /quiet suppresses, /verbose forces
+    verbose = _VERBOSE_STREAM
+    if "/quiet" in user_input.lower():
+        verbose = False
+        user_input = user_input.replace("/quiet", "").replace("/Quiet", "").strip()
+    elif "/verbose" in user_input.lower():
+        verbose = True
+        user_input = user_input.replace("/verbose", "").replace("/Verbose", "").strip()
+
+    session_id = _get_or_create_session_id()
+    logger.info("Request %s: session_id=%s", context.response_id, session_id)
 
     toolbox = ToolboxClient()
-    executor = BrowserExecutor(session_id=session_id)
 
     async def stream_response():
         try:
-            # Phase 1: Create browser session via Toolbox
-            logger.info("Creating browser session %s via Toolbox", session_id)
-            yield "⏳ Creating browser session via Toolbox...\n\n"
+            # Phase 1: Reuse existing session or create a new one
+            session = _sessions.get(session_id)
+            if session and session.active and session.is_alive():
+                logger.info("Reusing session %s", session_id)
+                yield f"🌐 **Reusing browser session** `{session_id}`\n\n"
+                yield f"🔴 **[Live View]({session.live_view_url})**\n\n"
+                yield "---\n\n"
+                executor = session.executor
+            else:
+                # Clean up dead session if any
+                if session_id in _sessions:
+                    del _sessions[session_id]
 
-            session_result = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: toolbox.create_session(session_id)
-            )
-            cdp_url = session_result.get("cdpUrl") or session_result.get("cdp_url") or ""
+                session = _BrowserSession(session_id)
+                logger.info("Creating browser session %s via Toolbox", session_id)
+                yield "⏳ Creating browser session via Toolbox...\n\n"
 
-            if not cdp_url:
-                logger.error("No CDP URL in session result: %s", session_result)
-                yield f"❌ Toolbox create_session returned no CDP URL.\nResult: {json.dumps(session_result)}\n"
-                yield f"\n🔍 **MI Token Debug (DefaultAzureCredential for management.core.windows.net/.default):**\n```json\n{_MI_TOKEN_DEBUG}\n```\n"
-                return
+                session_result = await asyncio.get_running_loop().run_in_executor(
+                    None, lambda: toolbox.create_session()
+                )
+                cdp_url = session_result.get("cdp_url") or ""
 
-            # Phase 2: Stream live view URL to user immediately
-            yield f"🌐 **Browser session created!**\n\n"
-            from urllib.parse import quote
-            live_view_cdp = cdp_url + ("&" if "?" in cdp_url else "?") + "isSecondaryConnection=true"
-            live_view_url = f"https://pwwdashboard-f4gkeyekh5bucqb3.eastus-01.azurewebsites.net/?cdp={quote(live_view_cdp, safe='')}"
-            yield f"🔴 **[Live View]({live_view_url})**\n\n"
-            yield f"Session ID: `{session_id}`\n\n"
-            yield "---\n\n⏳ Connecting playwright-cli...\n\n"
+                if not cdp_url:
+                    logger.error("No CDP URL in session result: %s", session_result)
+                    yield f"❌ Toolbox create_session returned no CDP URL.\nResult: {json.dumps(session_result)}\n"
+                    return
 
-            # Phase 3: Connect the CLI to the CDP URL
-            connect_result = executor.connect(cdp_url)
-            if not connect_result["success"]:
-                err_detail = connect_result.get('stderr') or connect_result.get('stdout') or 'unknown'
-                logger.error("Connect failed: %s", connect_result)
-                yield f"❌ Failed to connect browser CLI: {err_detail}\n"
-                return
+                # Build live view URL
+                from urllib.parse import quote
+                live_view_cdp = cdp_url + ("&" if "?" in cdp_url else "?") + "isSecondaryConnection=true"
+                live_view_url = f"https://pwwdashboard-f4gkeyekh5bucqb3.eastus-01.azurewebsites.net/?cdp={quote(live_view_cdp, safe='')}"
 
-            yield "✅ Browser connected. Working on your request...\n\n"
+                yield f"🌐 **Browser session created!** `{session_id}`\n\n"
+                yield f"🔴 **[Live View]({live_view_url})**\n\n"
+                yield "---\n\n⏳ Connecting playwright-cli...\n\n"
 
-            # Phase 4: Model tool loop
+                # Connect
+                executor = BrowserExecutor(session_id=session_id)
+                connect_result = executor.connect(cdp_url)
+                if not connect_result["success"]:
+                    err_detail = connect_result.get('stderr') or connect_result.get('stdout') or 'unknown'
+                    logger.error("Connect failed: %s", connect_result)
+                    yield f"❌ Failed to connect browser CLI: {err_detail}\n"
+                    return
+
+                yield "✅ Browser connected. Working on your request...\n\n"
+
+                # Store session for reuse
+                session.active = True
+                session.cdp_url = cdp_url
+                session.executor = executor
+                session.live_view_url = live_view_url
+                _sessions[session_id] = session
+
+            # Phase 2: Model tool loop
             responses, model = _responses_client()
             input_items = _build_input(user_input, history)
 
@@ -232,7 +303,8 @@ async def handler(
                             command = args.get("command", "")
                             command_args = args.get("args") or []
                             result = executor.run_command(command, command_args)
-                            yield f"🔧 `{command} {' '.join(command_args[:3])}`\n"
+                            if verbose:
+                                yield f"🔧 `{command} {' '.join(command_args[:3])}`\n"
                         except (json.JSONDecodeError, BrowserExecutorError) as error:
                             result = {"success": False, "error": str(error)}
 
@@ -263,27 +335,10 @@ async def handler(
         except Exception as error:
             logger.exception("Browser automation failed")
             yield f"\n❌ Browser automation failed: {error}\n"
-            yield f"\n🔍 **MI Token Debug (DefaultAzureCredential → management.core.windows.net/.default):**\n```json\n{_MI_TOKEN_DEBUG}\n```\n"
-
-        finally:
-            # Phase 5: Cleanup
-            logger.info("Cleaning up session %s", session_id)
-            try:
-                executor.close()
-            except Exception as close_error:
-                logger.warning("CLI close failed: %s", close_error)
-
-            try:
-                await asyncio.get_running_loop().run_in_executor(
-                    None, lambda: toolbox.end_session(session_id)
-                )
-            except Exception as end_error:
-                logger.warning("Toolbox end_session failed: %s", end_error)
-
-            try:
-                await toolbox.shutdown()
-            except Exception as tb_error:
-                logger.warning("Toolbox shutdown failed: %s", tb_error)
+            # Mark session as dead so next request creates a new one
+            if session_id in _sessions:
+                _sessions[session_id].reset()
+                del _sessions[session_id]
 
     return TextResponse(context, request, text=stream_response())
 

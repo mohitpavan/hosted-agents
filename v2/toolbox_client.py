@@ -22,7 +22,7 @@ _TOOLBOX_VERSION = os.getenv("TOOLBOX_VERSION", "")
 # Construct Toolbox URL from project endpoint + toolbox name
 if _TOOLBOX_NAME and _FOUNDRY_ENDPOINT:
     _base = f"{_FOUNDRY_ENDPOINT.rstrip('/')}/toolboxes/{_TOOLBOX_NAME}"
-    if _TOOLBOX_VERSION:
+    if _TOOLBOX_VERSION and _TOOLBOX_VERSION != "0":
         _base += f"/versions/{_TOOLBOX_VERSION}"
     TOOLBOX_ENDPOINT = f"{_base}/mcp?api-version=v1"
 else:
@@ -174,20 +174,19 @@ class ToolboxClient:
         except json.JSONDecodeError:
             return {"raw": text}
 
-    def create_session(self, session_id: str) -> dict[str, Any]:
+    def create_session(self) -> dict[str, Any]:
         """Create a remote browser session via Toolbox.
-        Returns dict with cdpUrl, liveViewUrl, sessionId, etc."""
+        Returns dict with cdpUrl, liveViewUrl, etc."""
         tool_name = "browser_automation_preview___create_session"
-        logger.info("Calling %s (session_id=%s)", tool_name, session_id)
+        logger.info("Calling %s", tool_name)
         return self._call_tool(tool_name, {})
 
-    def end_session(self, session_id: str) -> dict[str, Any]:
+    def end_session(self) -> dict[str, Any]:
         """End a remote browser session via Toolbox (if tool exists)."""
-        # Try to call end_session; if it doesn't exist, just log and return
         tool_name = "browser_automation_preview___end_session"
-        logger.info("Calling %s (session_id=%s)", tool_name, session_id)
+        logger.info("Calling %s", tool_name)
         try:
-            return self._call_tool(tool_name, {"sessionId": session_id})
+            return self._call_tool(tool_name, {})
         except RuntimeError as e:
             logger.warning("end_session not available: %s", e)
             return {"status": "skipped", "reason": str(e)}
