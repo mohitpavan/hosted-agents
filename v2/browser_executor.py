@@ -20,7 +20,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 PLAYWRIGHT_CLI_COMMANDS = {
-    "open", "state", "screenshot", "snapshot",
+    "state", "screenshot", "snapshot",
     "click", "dblclick", "rightclick", "hover",
     "type", "input", "keys", "select", "upload",
     "scroll", "back", "eval",
@@ -97,12 +97,14 @@ class BrowserExecutor:
         self._project_root = Path.cwd()
 
     async def connect(self, cdp_url: str) -> dict[str, Any]:
-        """Connect playwright-cli to the remote browser via CDP URL (first call only)."""
+        """Connect playwright-cli to the remote browser via attach --cdp (the documented way)."""
         self._cdp_url = cdp_url
-        logger.info("CONNECT: starting playwright-cli with CDP URL for session %s", self.session_id)
+        logger.info("CONNECT: attaching playwright-cli to CDP for session %s", self.session_id)
+        # Use 'attach --cdp=<url>' which is the documented way to connect to a remote browser
+        # Then the session persists and subsequent commands work without re-specifying CDP
         result = await self._run_async(
-            command="open about:blank",
-            include_cdp_env=True,
+            command=f"attach --cdp={cdp_url}",
+            include_cdp_env=False,
             timeout=90,
         )
         logger.info("CONNECT result: success=%s exit_code=%s stdout=%.500s stderr=%.500s",

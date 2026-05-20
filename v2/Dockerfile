@@ -8,7 +8,7 @@ WORKDIR /app
 
 # Install system deps + Node 22 from NodeSource (required for playwright-cli daemon)
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
+    && apt-get install -y --no-install-recommends ca-certificates curl gnupg tini \
     && mkdir -p /etc/apt/keyrings \
     && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
         | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
@@ -31,4 +31,5 @@ RUN pip install --no-cache-dir --upgrade certifi pip \
 COPY . .
 
 EXPOSE 8088
+ENTRYPOINT ["/usr/bin/tini", "-s", "--"]
 CMD ["python", "main.py"]
