@@ -55,9 +55,9 @@ class BrowserExecutor:
     def connect(self, cdp_url: str) -> dict[str, Any]:
         """Connect playwright-cli to the remote browser via CDP URL."""
         self._cdp_url = cdp_url
-        # Use 'open about:blank' as handshake (playwright-cli style)
+        # Only pass CDP URL on initial connect — subsequent commands use -s= session state
         result = self._run_subprocess(
-            self._cli_args(["open", "about:blank"])
+            self._cli_args(["open", "about:blank"]), use_cdp_env=True
         )
         if result["success"]:
             self._connected = True
@@ -77,7 +77,8 @@ class BrowserExecutor:
 
         argv = self._cli_args([normalized, *command_args])
         logger.info("Browser command: %s %s", normalized, self._redact_args(command_args))
-        return self._run_subprocess(argv)
+        # Don't pass CDP URL — session state handles reconnection
+        return self._run_subprocess(argv, use_cdp_env=False)
 
     def close(self) -> dict[str, Any]:
         """Close the browser CLI session."""
@@ -100,9 +101,10 @@ class BrowserExecutor:
             env["PLAYWRIGHT_MCP_CDP_ENDPOINT"] = self._cdp_url
         return env
 
-    def _run_subprocess(self, argv: list[str], timeout: int | None = None) -> dict[str, Any]:
+    def _run_subprocess(self, argv: list[str], timeout: int | None = None, use_cdp_env: bool = True) -> dict[str, Any]:
         effective_timeout = timeout or self.command_timeout_seconds
         try:
+            env = self._make_env() if use_cdp_env else os.environ.copy()
             completed = subprocess.run(
                 argv,
                 cwd=self._project_root,
@@ -110,7 +112,7 @@ class BrowserExecutor:
                 capture_output=True,
                 timeout=effective_timeout,
                 check=False,
-                env=self._make_env(),
+                env=env,
             )
             stdout = self._truncate(self._redact(completed.stdout or ""))
             stderr = self._truncate(self._redact(completed.stderr or ""))
