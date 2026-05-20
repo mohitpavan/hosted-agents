@@ -206,7 +206,8 @@ async def handler(
 
             # Phase 2: Stream CDP URL to user immediately
             yield f"🌐 **Browser session created!**\n\n"
-            yield f"**CDP URL (connect to watch live):**\n```\n{cdp_url}\n```\n\n"
+            short_cdp = cdp_url[:20] + "..."
+            yield f"**[{short_cdp}]({cdp_url})**\n\n"
             yield f"Session ID: `{session_id}` | CLI: `{cli_mode}`\n\n"
             yield "---\n\n⏳ Starting browser automation...\n\n"
 

@@ -179,9 +179,12 @@ async def handler(
                 yield f"\n🔍 **MI Token Debug (DefaultAzureCredential for management.core.windows.net/.default):**\n```json\n{_MI_TOKEN_DEBUG}\n```\n"
                 return
 
-            # Phase 2: Stream CDP URL to user immediately
+            # Phase 2: Stream live view URL to user immediately
             yield f"🌐 **Browser session created!**\n\n"
-            yield f"**CDP URL (connect to watch live):**\n```\n{cdp_url}\n```\n\n"
+            from urllib.parse import quote
+            live_view_cdp = cdp_url + ("&" if "?" in cdp_url else "?") + "isSecondaryConnection=true"
+            live_view_url = f"https://pwwdashboard-f4gkeyekh5bucqb3.eastus-01.azurewebsites.net/?cdp={quote(live_view_cdp, safe='')}"
+            yield f"🔴 **[Live View]({live_view_url})**\n\n"
             yield f"Session ID: `{session_id}`\n\n"
             yield "---\n\n⏳ Connecting playwright-cli...\n\n"
 
