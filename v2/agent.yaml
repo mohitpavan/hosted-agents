@@ -25,6 +25,6 @@ environment_variables:
     - name: TOOLBOX_NAME
       value: Mohit-toolbox
     - name: TOOLBOX_VERSION
-      value: "2"
+      value: "3"
     - name: BROWSER_VERBOSE
       value: "true"

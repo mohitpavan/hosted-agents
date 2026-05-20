@@ -1,4 +1,9 @@
-"""Browser CLI executor — runs playwright-cli commands against a remote CDP session."""
+"""Browser CLI executor — runs playwright-cli commands against a remote CDP session.
+
+Pattern (from reference impl):
+1. First call: pass CDP URL via env var to establish connection (open about:blank)
+2. Subsequent calls: do NOT pass CDP URL — the -s= session flag persists the connection
+"""
 from __future__ import annotations
 
 import logging
@@ -12,11 +17,16 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 PLAYWRIGHT_CLI_COMMANDS = {
-    "open", "state", "screenshot",
+    "open", "state", "screenshot", "snapshot",
     "click", "dblclick", "rightclick", "hover",
     "type", "input", "keys", "select", "upload",
     "scroll", "back", "eval",
     "tab", "get", "wait",
+    "goto", "go-back", "go-forward", "reload",
+    "press", "keydown", "keyup",
+    "fill", "check", "uncheck",
+    "tab-list", "tab-new", "tab-close", "tab-select",
+    "resize", "mousemove", "mousedown", "mouseup", "mousewheel",
 }
 
 TOKEN_PATTERNS = [
@@ -32,7 +42,11 @@ class BrowserExecutorError(RuntimeError):
 
 
 class BrowserExecutor:
-    """Executes playwright-cli commands against a remote CDP session."""
+    """Executes playwright-cli commands against a remote CDP session.
+    
+    First call (connect) passes CDP URL via env var.
+    Subsequent calls use -s= session persistence — no CDP URL passed.
+    """
 
     def __init__(
         self,
@@ -53,18 +67,20 @@ class BrowserExecutor:
         self._project_root = Path.cwd()
 
     def connect(self, cdp_url: str) -> dict[str, Any]:
-        """Connect playwright-cli to the remote browser via CDP URL."""
+        """Connect playwright-cli to the remote browser via CDP URL (first call only)."""
         self._cdp_url = cdp_url
-        # Only pass CDP URL on initial connect — subsequent commands use -s= session state
+        # Pass CDP URL only on this first call to establish connection
         result = self._run_subprocess(
-            self._cli_args(["open", "about:blank"]), use_cdp_env=True
+            self._cli_args(["open", "about:blank"]),
+            include_cdp_env=True,
+            timeout=90,
         )
         if result["success"]:
             self._connected = True
         return result
 
     def run_command(self, command: str, args: list[str] | None = None) -> dict[str, Any]:
-        """Run a browser command. Raises BrowserExecutorError on invalid commands."""
+        """Run a browser command. Never passes CDP URL — session handles it."""
         normalized = command.strip()
         if normalized not in PLAYWRIGHT_CLI_COMMANDS:
             raise BrowserExecutorError(f"Command '{normalized}' is not allowed.")
@@ -77,16 +93,12 @@ class BrowserExecutor:
 
         argv = self._cli_args([normalized, *command_args])
         logger.info("Browser command: %s %s", normalized, self._redact_args(command_args))
-        # Don't pass CDP URL — session state handles reconnection
-        return self._run_subprocess(argv, use_cdp_env=False)
+        # Do NOT pass CDP URL — session -s= persists the connection
+        return self._run_subprocess(argv, include_cdp_env=False)
 
-    def close(self) -> dict[str, Any]:
-        """Close the browser CLI session."""
-        if not self._connected:
-            return {"success": True, "message": "Not connected"}
-        result = self._run_subprocess(self._cli_args(["close"]), timeout=15)
-        self._connected = False
-        return result
+    def is_process_alive(self) -> bool:
+        """Check if the session is still connected."""
+        return self._connected
 
     def _cli_args(self, args: list[str]) -> list[str]:
         env_path = os.environ.get("PATH", "")
@@ -94,17 +106,12 @@ class BrowserExecutor:
         base = [playwright_cli, f"-s={self.session_id}"]
         return [*base, *args]
 
-    def _make_env(self) -> dict[str, str]:
-        """Build subprocess env with CDP endpoint set."""
-        env = os.environ.copy()
-        if self._cdp_url:
-            env["PLAYWRIGHT_MCP_CDP_ENDPOINT"] = self._cdp_url
-        return env
-
-    def _run_subprocess(self, argv: list[str], timeout: int | None = None, use_cdp_env: bool = True) -> dict[str, Any]:
+    def _run_subprocess(self, argv: list[str], timeout: int | None = None, include_cdp_env: bool = False) -> dict[str, Any]:
         effective_timeout = timeout or self.command_timeout_seconds
+        env = os.environ.copy()
+        if include_cdp_env and self._cdp_url:
+            env["PLAYWRIGHT_MCP_CDP_ENDPOINT"] = self._cdp_url
         try:
-            env = self._make_env() if use_cdp_env else os.environ.copy()
             completed = subprocess.run(
                 argv,
                 cwd=self._project_root,
@@ -147,3 +154,5 @@ class BrowserExecutor:
         if len(text) <= self.max_output_chars:
             return text
         return text[: self.max_output_chars] + "\n...[truncated]"
+
+
