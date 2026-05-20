@@ -93,29 +93,7 @@ class BrowserExecutor:
                 self._browser_use_args(["--cdp-url", cdp_url, "open", "about:blank"])
             )
         else:
-            # playwright-cli: write config first, then open in a separate step
-            config_dir = self._project_root / ".playwright-remote" / self.session_id
-            config_dir.mkdir(parents=True, exist_ok=True)
-            self._config_path = config_dir / "config.json"
-
-            artifact_dir = self._project_root / "artifacts" / self.session_id
-            artifact_dir.mkdir(parents=True, exist_ok=True)
-
-            config = {
-                "browser": {
-                    "browserName": "chromium",
-                    "isolated": True,
-                    "remoteEndpoint": cdp_url,
-                },
-                "outputDir": str(artifact_dir),
-                "outputMode": "file",
-                "timeouts": {"action": 15000, "navigation": 90000},
-            }
-            self._config_path.write_text(
-                __import__("json").dumps(config, indent=2) + "\n", encoding="utf-8"
-            )
-
-            # Open about:blank to establish the session
+            # playwright-cli: pass CDP URL via env var, then open about:blank
             result = self._run_subprocess(
                 self._playwright_cli_args(["open", "about:blank"])
             )
@@ -164,11 +142,6 @@ class BrowserExecutor:
             )
 
         self._connected = False
-        # Clean up config files
-        config_dir = self._project_root / ".playwright-remote" / self.session_id
-        if config_dir.exists():
-            shutil.rmtree(config_dir, ignore_errors=True)
-
         return result
 
     def _browser_use_args(self, args: list[str]) -> list[str]:
@@ -180,11 +153,14 @@ class BrowserExecutor:
         local_bin_name = "playwright-cli.cmd" if os.name == "nt" else "playwright-cli"
         local_bin = self._project_root / "node_modules" / ".bin" / local_bin_name
         cli_path = str(local_bin) if local_bin.exists() else (shutil.which("playwright-cli") or "playwright-cli")
-        argv = [cli_path, f"-s={self.session_id}", *args]
-        # Append --config for 'open' commands (required for remote connection)
-        if args and args[0] == "open" and hasattr(self, "_config_path"):
-            argv.extend(["--config", str(self._config_path)])
-        return argv
+        return [cli_path, f"-s={self.session_id}", *args]
+
+    def _make_env(self) -> dict[str, str]:
+        """Build subprocess env with CDP endpoint set."""
+        env = os.environ.copy()
+        if self._cdp_url:
+            env["PLAYWRIGHT_MCP_CDP_ENDPOINT"] = self._cdp_url
+        return env
 
     def _run_subprocess(self, argv: list[str], timeout: int | None = None) -> dict[str, Any]:
         effective_timeout = timeout or self.command_timeout_seconds
@@ -196,6 +172,7 @@ class BrowserExecutor:
                 capture_output=True,
                 timeout=effective_timeout,
                 check=False,
+                env=self._make_env(),
             )
             stdout = self._truncate(self._redact(completed.stdout or ""))
             stderr = self._truncate(self._redact(completed.stderr or ""))
