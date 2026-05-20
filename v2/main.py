@@ -260,7 +260,7 @@ async def handler(
 
                 # Connect
                 executor = BrowserExecutor(session_id=session_id)
-                connect_result = executor.connect(cdp_url)
+                connect_result = await executor.connect(cdp_url)
                 if not connect_result["success"]:
                     err_detail = connect_result.get('stderr') or connect_result.get('stdout') or 'unknown'
                     logger.error("Connect failed: %s", connect_result)
@@ -309,7 +309,7 @@ async def handler(
                             args = json.loads(call.arguments or "{}")
                             command = args.get("command", "")
                             command_args = args.get("args") or []
-                            result = executor.run_command(command, command_args)
+                            result = await executor.run_command(command, command_args)
                             if verbose:
                                 yield f"🔧 `{command} {' '.join(command_args[:3])}`\n"
                             # Track success/failure for session health

@@ -1,16 +1,19 @@
 """Browser CLI executor — runs playwright-cli commands against a remote CDP session.
 
-Pattern (from reference impl):
-1. First call: pass CDP URL via env var to establish connection (open about:blank)
-2. Subsequent calls: do NOT pass CDP URL — the -s= session flag persists the connection
+Pattern (from reference sample):
+1. First call: pass CDP URL via PLAYWRIGHT_MCP_CDP_ENDPOINT env var (open about:blank)
+2. Subsequent calls: do NOT pass CDP URL — the -s= session daemon persists the connection
+3. Uses asyncio.create_subprocess_exec (async) — matches the working sample exactly.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
+import shlex
 import shutil
-import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -41,9 +44,36 @@ class BrowserExecutorError(RuntimeError):
     """Raised when a browser command cannot be executed safely."""
 
 
+def _make_subprocess_env() -> dict[str, str]:
+    """Build env dict for subprocess — matches the sample's make_subprocess_env."""
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    # Ensure scripts dir is in PATH
+    scripts_path = Path(sys.executable).parent
+    env["PATH"] = str(scripts_path) + os.pathsep + env.get("PATH", "")
+    return env
+
+
+def _resolve_playwright_cli(env: dict[str, str]) -> str:
+    """Find playwright-cli binary."""
+    return shutil.which("playwright-cli", path=env.get("PATH", "")) or "playwright-cli"
+
+
+def _redact(text: str) -> str:
+    for pattern, replacement in TOKEN_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def _truncate(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n...[truncated]"
+
+
 class BrowserExecutor:
-    """Executes playwright-cli commands against a remote CDP session.
-    
+    """Executes playwright-cli commands against a remote CDP session (async).
+
     First call (connect) passes CDP URL via env var.
     Subsequent calls use -s= session persistence — no CDP URL passed.
     """
@@ -66,20 +96,23 @@ class BrowserExecutor:
         self._cdp_url: str | None = None
         self._project_root = Path.cwd()
 
-    def connect(self, cdp_url: str) -> dict[str, Any]:
+    async def connect(self, cdp_url: str) -> dict[str, Any]:
         """Connect playwright-cli to the remote browser via CDP URL (first call only)."""
         self._cdp_url = cdp_url
-        # Pass CDP URL only on this first call to establish connection
-        result = self._run_subprocess(
-            self._cli_args(["open", "about:blank"]),
+        logger.info("CONNECT: starting playwright-cli with CDP URL for session %s", self.session_id)
+        result = await self._run_async(
+            command="open about:blank",
             include_cdp_env=True,
             timeout=90,
         )
+        logger.info("CONNECT result: success=%s exit_code=%s stdout=%.500s stderr=%.500s",
+                    result.get("success"), result.get("exit_code"),
+                    result.get("stdout", ""), result.get("stderr", ""))
         if result["success"]:
             self._connected = True
         return result
 
-    def run_command(self, command: str, args: list[str] | None = None) -> dict[str, Any]:
+    async def run_command(self, command: str, args: list[str] | None = None) -> dict[str, Any]:
         """Run a browser command. Never passes CDP URL — session handles it."""
         normalized = command.strip()
         if normalized not in PLAYWRIGHT_CLI_COMMANDS:
@@ -91,49 +124,75 @@ class BrowserExecutor:
         command_args = args or []
         self._validate_args(command_args)
 
-        argv = self._cli_args([normalized, *command_args])
-        logger.info("Browser command: %s %s", normalized, self._redact_args(command_args))
-        # Do NOT pass CDP URL — session -s= persists the connection
-        return self._run_subprocess(argv, include_cdp_env=False)
+        full_command = normalized + (" " + " ".join(command_args) if command_args else "")
+        logger.info("Browser command: %s", _redact(full_command))
+        result = await self._run_async(command=full_command, include_cdp_env=False)
+        logger.info("Command result: success=%s exit_code=%s stdout=%.300s stderr=%.300s",
+                    result.get("success"), result.get("exit_code"),
+                    result.get("stdout", ""), result.get("stderr", ""))
+        return result
 
     def is_process_alive(self) -> bool:
         """Check if the session is still connected."""
         return self._connected
 
-    def _cli_args(self, args: list[str]) -> list[str]:
-        env_path = os.environ.get("PATH", "")
-        playwright_cli = shutil.which("playwright-cli", path=env_path) or "playwright-cli"
-        base = [playwright_cli, f"-s={self.session_id}"]
-        return [*base, *args]
-
-    def _run_subprocess(self, argv: list[str], timeout: int | None = None, include_cdp_env: bool = False) -> dict[str, Any]:
+    async def _run_async(
+        self,
+        command: str,
+        include_cdp_env: bool = False,
+        timeout: int | None = None,
+    ) -> dict[str, Any]:
+        """Run playwright-cli async subprocess — matches the sample's pattern exactly."""
         effective_timeout = timeout or self.command_timeout_seconds
-        env = os.environ.copy()
+        env = _make_subprocess_env()
         if include_cdp_env and self._cdp_url:
             env["PLAYWRIGHT_MCP_CDP_ENDPOINT"] = self._cdp_url
+
+        playwright_cli = _resolve_playwright_cli(env)
+        cli_args = shlex.split(command)
+        process_args = [playwright_cli, f"-s={self.session_id}", *cli_args]
+        safe_cmd = _redact(" ".join(process_args))
+        logger.info("[playwright-cli] timeout=%ds cmd=%s", effective_timeout, safe_cmd)
+
         try:
-            completed = subprocess.run(
-                argv,
-                cwd=self._project_root,
-                text=True,
-                capture_output=True,
-                timeout=effective_timeout,
-                check=False,
+            process = await asyncio.create_subprocess_exec(
+                *process_args,
+                cwd=str(self._project_root),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
                 env=env,
             )
-            stdout = self._truncate(self._redact(completed.stdout or ""))
-            stderr = self._truncate(self._redact(completed.stderr or ""))
-            return {
-                "success": completed.returncode == 0,
-                "command": " ".join(argv[:3]),
-                "exit_code": completed.returncode,
-                "stdout": stdout,
-                "stderr": stderr,
-            }
-        except subprocess.TimeoutExpired:
-            raise BrowserExecutorError(f"Command timed out after {effective_timeout}s")
         except FileNotFoundError:
-            raise BrowserExecutorError(f"Executable not found: {argv[0]}")
+            raise BrowserExecutorError(f"Executable not found: {playwright_cli}")
+
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                process.communicate(),
+                timeout=effective_timeout,
+            )
+        except asyncio.TimeoutError:
+            process.kill()
+            stdout_bytes, stderr_bytes = await process.communicate()
+            stdout = _redact(stdout_bytes.decode("utf-8", errors="replace"))
+            stderr = _redact(stderr_bytes.decode("utf-8", errors="replace"))
+            return {
+                "success": False,
+                "command": safe_cmd,
+                "exit_code": -1,
+                "stdout": _truncate(stdout, self.max_output_chars),
+                "stderr": _truncate(stderr, self.max_output_chars),
+                "timed_out": True,
+            }
+
+        stdout = _redact(stdout_bytes.decode("utf-8", errors="replace"))
+        stderr = _redact(stderr_bytes.decode("utf-8", errors="replace"))
+        return {
+            "success": process.returncode == 0,
+            "command": safe_cmd,
+            "exit_code": process.returncode,
+            "stdout": _truncate(stdout, self.max_output_chars),
+            "stderr": _truncate(stderr, self.max_output_chars),
+        }
 
     def _validate_args(self, args: list[str]) -> None:
         for arg in args:
@@ -141,18 +200,3 @@ class BrowserExecutor:
                 raise BrowserExecutorError("Command arguments must be strings.")
             if "\x00" in arg:
                 raise BrowserExecutorError("Command arguments cannot contain NUL bytes.")
-
-    def _redact(self, text: str) -> str:
-        for pattern, replacement in TOKEN_PATTERNS:
-            text = pattern.sub(replacement, text)
-        return text
-
-    def _redact_args(self, args: list[str]) -> list[str]:
-        return [self._redact(arg) for arg in args]
-
-    def _truncate(self, text: str) -> str:
-        if len(text) <= self.max_output_chars:
-            return text
-        return text[: self.max_output_chars] + "\n...[truncated]"
-
-
