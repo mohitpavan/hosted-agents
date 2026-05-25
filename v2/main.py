@@ -204,7 +204,6 @@ async def handler(
 ):
     user_input = await context.get_input_text() or "Hello!"
     history = await context.get_history()
-    max_commands = _int_env("BROWSER_MAX_COMMANDS", 24)
 
     # Per-request verbose override: /quiet suppresses, /verbose forces
     verbose = _VERBOSE_STREAM
@@ -290,7 +289,7 @@ async def handler(
                 ),
             )
 
-            for _ in range(max_commands):
+            while True:
                 if cancellation_signal.is_set():
                     yield "\n⚠️ Request cancelled.\n"
                     return
@@ -342,8 +341,6 @@ async def handler(
                         tools=_TOOLS,
                     ),
                 )
-
-            yield f"\n⚠️ Reached command limit ({max_commands}).\n"
 
         except Exception as error:
             logger.exception("Browser automation failed")
