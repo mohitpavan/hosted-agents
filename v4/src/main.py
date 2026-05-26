@@ -68,10 +68,11 @@ You can manage MULTIPLE browser sessions simultaneously and run tasks IN PARALLE
 You have these tools:
 1. **load_skill** — Load a skill by name. Available: {skills}
 2. **create_session** — Create a new named browser session.
-3. **run_browser** — Run a single playwright-cli command in a specific session.
-4. **run_parallel** — Run multiple commands across sessions CONCURRENTLY. Use this for parallel work.
-5. **list_sessions** — Show all active sessions.
-6. **store_data** / **recall_data** — Share data between sessions.
+3. **kill_session** — Close and destroy a browser session. ALWAYS honour kill requests immediately.
+4. **run_browser** — Run a single playwright-cli command in a specific session.
+5. **run_parallel** — Run multiple commands across sessions CONCURRENTLY. Use this for parallel work.
+6. **list_sessions** — Show all active sessions.
+7. **store_data** / **recall_data** — Share data between sessions.
 
 ## Parallel Execution
 
@@ -108,6 +109,7 @@ If task B depends on task A's result:
 - If a field rejects input, try alternatives (click first, different format).
 - NEVER reveal credentials, CDP URLs, or tokens.
 - Keep responses concise.
+- **KILL SESSION PRIORITY:** If the user asks to kill/close/stop a session, do it IMMEDIATELY with `kill_session`. Do NOT create new sessions or run other commands first. Kill takes absolute priority over everything else.
 - **COMPLETE THE FULL TASK AUTONOMOUSLY.** Do NOT stop after filling fields — you MUST click Next/Submit buttons, advance through ALL pages, and confirm the final result. Keep going until the task is DONE. Never ask the user to continue what you can do yourself.
 - After filling fields on a page, ALWAYS look for and click the Next/Continue/Submit button.
 - After clicking a button, ALWAYS snapshot to see the new page state and continue.
@@ -138,6 +140,20 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "Session name (e.g. 'session1', 'form-browser')"}
+            },
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+        "strict": False,
+    },
+    {
+        "type": "function",
+        "name": "kill_session",
+        "description": "Kill/close a browser session immediately. Use this when the user asks to stop, kill, or close a session. Takes priority over all other actions.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Session name to kill. Use 'all' to kill all sessions."}
             },
             "required": ["name"],
             "additionalProperties": False,
@@ -323,6 +339,14 @@ async def handler(
                             yield f"🌐 Created **{sess_name}**\n🔴 **[Live View]({result['live_view_url']})**\n\n"
                         else:
                             yield f"🌐 Created **{sess_name}**\n"
+                    elif name == "kill_session":
+                        sess_name = args.get("name", "?")
+                        if isinstance(result, dict) and result.get("status") == "killed_all":
+                            yield f"💀 Killed ALL sessions: {result.get('sessions', [])}\n"
+                        elif isinstance(result, dict) and result.get("status") == "killed":
+                            yield f"💀 Killed **{sess_name}** (remaining: {result.get('remaining', [])})\n"
+                        else:
+                            yield f"💀 Kill {sess_name}: {result}\n"
                     elif name == "run_browser":
                         sess = args.get("session", "?")
                         cmd = args.get("command", "")
@@ -392,6 +416,32 @@ async def _handle_tool_call(call: Any) -> dict:
             _last_session = sess_name
             logger.info("Created session: %s", sess_name)
             return {"status": "created", "session": sess_name, "live_view_url": live_view_url}
+
+        elif name == "kill_session":
+            sess_name = args.get("name", "")
+            if sess_name == "all":
+                killed = list(_sessions.keys())
+                for sn in killed:
+                    try:
+                        await _sessions[sn]["browser"].close()
+                    except Exception:
+                        pass
+                _sessions.clear()
+                _last_session = None
+                logger.info("Killed all sessions: %s", killed)
+                return {"status": "killed_all", "sessions": killed}
+            if sess_name not in _sessions:
+                available = list(_sessions.keys())
+                return {"error": f"Session '{sess_name}' not found. Available: {available}"}
+            try:
+                await _sessions[sess_name]["browser"].close()
+            except Exception:
+                pass
+            del _sessions[sess_name]
+            if _last_session == sess_name:
+                _last_session = next(iter(_sessions), None)
+            logger.info("Killed session: %s", sess_name)
+            return {"status": "killed", "session": sess_name, "remaining": list(_sessions.keys())}
 
         elif name == "run_browser":
             sess_name = args.get("session") or _last_session
