@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/microsoft/AgentSchema/refs/heads/main/schemas/v1.0/ContainerAgent.yaml
+
+kind: hosted
+name: mohit-bat-v4
+description: |
+    Multi-session browser automation agent. Manages multiple concurrent browser
+    sessions with cross-session data sharing and task dependency management.
+metadata:
+    tags:
+        - AI Agent Hosting
+        - Responses Protocol
+        - Bring Your Own
+        - Browser Automation
+        - Multi-Session
+        - Toolbox
+        - Python
+protocols:
+    - protocol: responses
+      version: 1.0.0
+resources:
+    cpu: "1"
+    memory: 2Gi
+environment_variables:
+    - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
+      value: gpt-5.4-mini
+    - name: TOOLBOX_ENDPOINT
+      value: 'https://mitsha-aif-norway.services.ai.azure.com/api/projects/mohit-bat-proj/toolboxes/Mohit-toolbox/mcp?api-version=v1'

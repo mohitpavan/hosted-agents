@@ -65,34 +65,32 @@ def _responses_client():
 
 SYSTEM_PROMPT = """You are a browser automation agent deployed on Azure Foundry.
 
+A remote Chromium browser session has already been created and connected for you via playwright-cli.
+
 You have these tools:
 1. **load_skill** — Load a skill by name to get detailed instructions. Available skills: {skills}
 2. **run_browser** — Run a playwright-cli command against the active session.
-3. **Toolbox tools** — {toolbox_tools} (auto-discovered from Toolbox)
 
-## Workflow (MUST follow this EXACT order — NO EXCEPTIONS)
+## Workflow
 
-**BEFORE ANY browser command (goto/snapshot/click/fill/etc), you MUST do steps 1-3:**
-
-1. Call `load_skill` with the relevant skill name.
-2. Call `browser_automation_preview___create_session` (Toolbox tool) — returns cdp_url and live_view_url.
-3. Call `run_browser` with command="connect", args=["<cdp_url from step 2>"]
-4. ONLY NOW can you use: `run_browser` with command="goto", args=["<url>"]
-5. Inspect: `run_browser` with command="snapshot" to see page elements.
-6. Interact: `run_browser` with command="click"/"fill"/"select", args=["ref", ...]
-7. When done, call `browser_automation_preview___end_session` (Toolbox tool).
-
-⚠️ If you skip steps 2-3 and call goto/snapshot/click directly, it WILL FAIL.
+1. Call `load_skill` with the relevant skill name to get detailed instructions.
+2. Use `goto` to navigate to a URL.
+3. Use `snapshot` to see page elements (with refs).
+4. Use `click`, `fill`, `select`, etc. to interact with elements by ref.
 
 ## CRITICAL RULES
-- You MUST connect before any other browser command. goto/snapshot/click will FAIL without connect.
+- The browser is ALREADY connected. Just use `goto` directly — do NOT call `connect` or `create_session`.
 - Execute ONE command at a time. Wait for each result.
 - Always run `snapshot` before interacting — element refs change after navigation.
 - Use `goto` to navigate (NOT `open`).
 - Use `fill` with [ref, "text"] to type into inputs.
 - Use `click` with [ref] to click buttons/links.
+- **If a field rejects your input (e.g. date picker), try alternative approaches**: click it first, try different formats, use the calendar UI. Do NOT give up after one attempt.
 - NEVER reveal credentials, CDP URLs, or tokens to the user. They are internal.
 - Keep responses concise with concrete results.
+- **COMPLETE THE FULL TASK AUTONOMOUSLY.** Do NOT stop after filling fields — you MUST click Next/Submit buttons, advance through ALL pages, and confirm the final result. Keep going until the task is DONE.
+- After filling fields on a page, ALWAYS look for and click the Next/Continue/Submit button.
+- After clicking a button, ALWAYS snapshot to see the new page and continue working.
 """
 
 # ─── Tool definitions (our own tools — Toolbox tools are auto-discovered) ───
@@ -118,13 +116,13 @@ OWN_TOOLS = [
     {
         "type": "function",
         "name": "run_browser",
-        "description": "Run a playwright-cli command against the active browser session.",
+        "description": "Run a playwright-cli command against the already-connected browser session.",
         "parameters": {
             "type": "object",
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "Command: connect, goto, snapshot, click, fill, type, press, keys, select, scroll, back, eval, screenshot, hover, dblclick, check, uncheck, wait, tab-list, tab-new, tab-close, go-back, go-forward, reload",
+                    "description": "Command: goto, snapshot, click, fill, type, press, keys, select, scroll, eval, screenshot, hover, dblclick, check, uncheck, wait, tab-list, tab-new, tab-close, go-back, go-forward, reload",
                 },
                 "args": {
                     "type": "array",
@@ -147,17 +145,20 @@ app = ResponsesAgentServerHost(options=ResponsesServerOptions(default_fetch_hist
 # Global state
 _skills = SkillsManager()
 _toolbox = ToolboxClient()
-_browser = BrowserSession()
 
-# Discover Toolbox tools at startup and build combined tool list
+# Discover Toolbox tools at startup (for internal use, not exposed to model)
 try:
-    _toolbox_tools = _toolbox.discover_tools()
-    logger.info("Discovered %d Toolbox tools", len(_toolbox_tools))
+    _toolbox.discover_tools()
+    logger.info("Toolbox ready")
 except Exception as e:
-    logger.warning("Failed to discover Toolbox tools at startup: %s", e)
-    _toolbox_tools = []
+    logger.warning("Failed to initialize Toolbox at startup: %s", e)
 
-ALL_TOOLS = OWN_TOOLS + _toolbox_tools
+# Only expose our own tools to the model (no Toolbox tools — we manage sessions ourselves)
+ALL_TOOLS = OWN_TOOLS
+
+# Global browser session — created once per container, recreated if dead
+_browser: BrowserSession | None = None
+_live_view_url: str | None = None
 
 
 def _build_input(current_input: str, history: list[Any]) -> list[dict]:
@@ -187,16 +188,46 @@ async def handler(
     history = await context.get_history()
 
     async def stream():
+        global _browser, _live_view_url
         try:
+            # Phase 1: Ensure browser is connected (create if needed)
+            if not _browser or not _browser._connected:
+                yield "⏳ Creating browser session...\n\n"
+
+                session_result = await asyncio.get_running_loop().run_in_executor(
+                    None, lambda: _toolbox.call_tool("browser_automation_preview___create_session", {})
+                )
+                cdp_url = session_result.get("cdp_url") or ""
+                _live_view_url = session_result.get("live_view_url") or ""
+
+                if not cdp_url:
+                    logger.error("No CDP URL: %s", session_result)
+                    yield "❌ No CDP URL from Toolbox.\n"
+                    return
+
+                if _live_view_url:
+                    yield f"🔴 **[Live View]({_live_view_url})**\n\n"
+
+                _browser = BrowserSession(session_id=f"s-{os.urandom(4).hex()}")
+                connect_result = await _browser.run("connect", [cdp_url])
+                if not connect_result.get("success"):
+                    err = connect_result.get("stderr") or connect_result.get("error") or "unknown"
+                    logger.error("Connect failed: %s", connect_result)
+                    _browser = None
+                    yield f"❌ Connect failed: {err}\n"
+                    return
+
+                yield "✅ Browser connected!\n\n---\n\n"
+            else:
+                yield f"🌐 **Reusing browser session**\n\n"
+                if _live_view_url:
+                    yield f"🔴 **[Live View]({_live_view_url})**\n\n"
+                yield "---\n\n"
+
+            # Phase 2: Model tool loop
             responses, model = _responses_client()
             input_items = _build_input(user_input, history)
-
-            # Build system prompt with available skills and toolbox tool names
-            toolbox_names = [t["name"] for t in _toolbox_tools]
-            system = SYSTEM_PROMPT.format(
-                skills=", ".join(_skills.list_skills()),
-                toolbox_tools=", ".join(toolbox_names) if toolbox_names else "(none — Toolbox unavailable)",
-            )
+            system = SYSTEM_PROMPT.format(skills=", ".join(_skills.list_skills()))
 
             response = await asyncio.get_running_loop().run_in_executor(
                 None,
@@ -226,7 +257,6 @@ async def handler(
                         "call_id": call.call_id,
                         "output": json.dumps(result),
                     })
-                    # Stream progress (redact sensitive values)
                     name = getattr(call, "name", "")
                     if name == "run_browser":
                         args = json.loads(call.arguments or "{}")
@@ -237,13 +267,6 @@ async def handler(
                     elif name == "load_skill":
                         args = json.loads(call.arguments or "{}")
                         yield f"📖 Loading skill: {args.get('name', '?')}\n"
-                    elif _toolbox.is_toolbox_tool(name):
-                        yield f"🌐 Toolbox: `{name}`\n"
-                        # Show live view URL if it came from the tool
-                        if isinstance(result, dict):
-                            live_url = result.get("liveViewUrl") or result.get("live_view_url") or ""
-                            if live_url:
-                                yield f"🔴 **[Live View]({live_url})**\n\n"
 
                 response = await asyncio.get_running_loop().run_in_executor(
                     None,
@@ -263,33 +286,24 @@ async def handler(
 
 
 async def _handle_tool_call(call: Any) -> dict:
-    """Dispatch tool calls — own tools handled locally, Toolbox tools forwarded."""
+    """Dispatch tool calls — browser commands use the pre-connected session."""
+    global _browser
     name = getattr(call, "name", "")
     args = json.loads(call.arguments or "{}")
 
     try:
-        # Our own tools
         if name == "load_skill":
             return _skills.load(args.get("name", ""))
 
         elif name == "run_browser":
+            if not _browser:
+                return {"error": "Browser not connected."}
             command = args.get("command", "")
             cmd_args = args.get("args") or []
             result = await _browser.run(command, cmd_args)
-            logger.info("run_browser(%s) result: success=%s", command, result.get("success"))
-            return result
-
-        # Toolbox tools — forward directly
-        elif _toolbox.is_toolbox_tool(name):
-            logger.info("Forwarding to Toolbox: %s(%s)", name, args)
-            result = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: _toolbox.call_tool(name, args)
-            )
-            # If this looks like a create_session response, store CDP URL
-            cdp_url = result.get("cdp_url") or result.get("cdpUrl") or ""
-            if cdp_url:
-                _browser.set_cdp_url(cdp_url)
-            logger.info("Toolbox result keys: %s", list(result.keys()) if isinstance(result, dict) else type(result))
+            # If command failed, mark browser dead so next request reconnects
+            if not result.get("success") and command == "goto":
+                _browser = None
             return result
 
         else:
