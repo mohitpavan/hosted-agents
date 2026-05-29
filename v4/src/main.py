@@ -167,11 +167,11 @@ TOOLS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "session": {"type": "string", "description": "Session name to run the command in."},
+                "session": {"type": "string", "description": "Session name. Optional — uses default if omitted."},
                 "command": {"type": "string", "description": "Command: goto, snapshot, click, fill, type, press, keys, select, scroll, eval, screenshot, hover, dblclick, check, uncheck, wait, tab-list, tab-new, tab-close, go-back, go-forward, reload"},
                 "args": {"type": "array", "items": {"type": "string"}, "description": "Command arguments.", "default": []},
             },
-            "required": ["session", "command"],
+            "required": ["command"],
             "additionalProperties": False,
         },
         "strict": False,
@@ -289,7 +289,7 @@ async def handler(
     async def stream():
         global _last_session
         try:
-            # Show active sessions
+            # Show active sessions and inject state for model
             if _sessions:
                 yield f"🌐 **Active sessions:** {', '.join(_sessions.keys())}\n\n"
                 for name, s in _sessions.items():
@@ -297,10 +297,11 @@ async def handler(
                         yield f"🔴 **[{name} Live View]({s['live_view_url']})**\n"
                 yield "\n---\n\n"
 
-            # Model tool loop
             responses, model = _responses_client()
             input_items = _build_input(user_input, history)
             system = SYSTEM_PROMPT.format(skills=", ".join(_skills.list_skills()))
+            if _sessions:
+                input_items.insert(-1, {"role": "user", "content": f"[Active sessions: {list(_sessions.keys())}, default: {_last_session}]"})
 
             response = await asyncio.get_running_loop().run_in_executor(
                 None,
@@ -381,6 +382,35 @@ async def handler(
     return TextResponse(context, request, text=stream())
 
 
+async def _create_session_internal(sess_name: str) -> dict:
+    """Create a browser session via Toolbox + playwright-cli attach. Used by both auto-create and tool."""
+    global _last_session
+    if sess_name in _sessions:
+        return {"status": "already_exists", "session": sess_name, "live_view_url": _sessions[sess_name].get("live_view_url")}
+
+    # Create via Toolbox
+    result = await asyncio.get_running_loop().run_in_executor(
+        None, lambda: _toolbox.call_tool("browser_automation_preview___create_session", {})
+    )
+    cdp_url = result.get("cdp_url") or ""
+    live_view_url = result.get("live_view_url") or ""
+
+    if not cdp_url:
+        return {"error": "No CDP URL returned from Toolbox"}
+
+    # Connect
+    browser = BrowserSession(session_id=sess_name)
+    connect_result = await browser.run("connect", [cdp_url])
+    if not connect_result.get("success"):
+        err = connect_result.get("stderr") or connect_result.get("error") or "unknown"
+        return {"error": f"Connect failed: {err}"}
+
+    _sessions[sess_name] = {"browser": browser, "live_view_url": live_view_url}
+    _last_session = sess_name
+    logger.info("Created session: %s", sess_name)
+    return {"status": "created", "session": sess_name, "live_view_url": live_view_url}
+
+
 async def _handle_tool_call(call: Any) -> dict:
     global _last_session
     name = getattr(call, "name", "")
@@ -392,30 +422,7 @@ async def _handle_tool_call(call: Any) -> dict:
 
         elif name == "create_session":
             sess_name = args.get("name", f"session-{len(_sessions)+1}")
-            if sess_name in _sessions:
-                return {"status": "already_exists", "session": sess_name, "live_view_url": _sessions[sess_name].get("live_view_url")}
-
-            # Create via Toolbox
-            result = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: _toolbox.call_tool("browser_automation_preview___create_session", {})
-            )
-            cdp_url = result.get("cdp_url") or ""
-            live_view_url = result.get("live_view_url") or ""
-
-            if not cdp_url:
-                return {"error": "No CDP URL returned from Toolbox"}
-
-            # Connect
-            browser = BrowserSession(session_id=sess_name)
-            connect_result = await browser.run("connect", [cdp_url])
-            if not connect_result.get("success"):
-                err = connect_result.get("stderr") or connect_result.get("error") or "unknown"
-                return {"error": f"Connect failed: {err}"}
-
-            _sessions[sess_name] = {"browser": browser, "live_view_url": live_view_url}
-            _last_session = sess_name
-            logger.info("Created session: %s", sess_name)
-            return {"status": "created", "session": sess_name, "live_view_url": live_view_url}
+            return await _create_session_internal(sess_name)
 
         elif name == "kill_session":
             sess_name = args.get("name", "")
@@ -445,7 +452,13 @@ async def _handle_tool_call(call: Any) -> dict:
 
         elif name == "run_browser":
             sess_name = args.get("session") or _last_session
-            if not sess_name or sess_name not in _sessions:
+            # Auto-create "default" session if none exists (lazy init)
+            if not _sessions:
+                create_result = await _create_session_internal("default")
+                if create_result.get("error"):
+                    return create_result
+                sess_name = "default"
+            elif not sess_name or sess_name not in _sessions:
                 available = list(_sessions.keys())
                 return {"error": f"Session '{sess_name}' not found. Available: {available}. Create one first with create_session."}
 
