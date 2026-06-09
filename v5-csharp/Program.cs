@@ -2,7 +2,6 @@
 
 using System.ComponentModel;
 using System.Text.Json;
-using Azure.AI.AgentServer.Core;
 using Azure.AI.Projects;
 using Azure.Identity;
 using DotNetEnv;
@@ -25,72 +24,41 @@ var toolboxEndpoint = $"{projectEndpoint.ToString().TrimEnd('/')}/toolboxes/{too
 // Initialize services
 var credential = new DefaultAzureCredential();
 var toolbox = new ToolboxClient(toolboxEndpoint, credential);
-var sessionManager = new SessionManager(toolbox);
 
-// Load available skill names
-var skillsDir = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "skills");
-if (!Directory.Exists(skillsDir))
-    skillsDir = Path.Combine(Directory.GetCurrentDirectory(), "skills");
-var availableSkills = Directory.Exists(skillsDir)
-    ? Directory.GetFiles(skillsDir, "*.md").Select(f => Path.GetFileNameWithoutExtension(f)).ToList()
-    : new List<string>();
+// Single browser session for this agent instance
+BrowserSession? currentSession = null;
+string? liveViewUrl = null;
 
-var systemPrompt = $$"""
-    You are a multi-session browser automation agent deployed on Azure Foundry.
+var systemPrompt = """
+    You are a browser automation agent deployed on Azure AI Foundry.
 
-    You can manage MULTIPLE browser sessions simultaneously and run tasks IN PARALLEL.
+    You control a single browser session to help users with web tasks like filling forms,
+    navigating pages, scraping content, and interacting with web apps.
 
-    ## Available Skills: {{string.Join(", ", availableSkills)}}
+    ## Workflow
+    1. Call `create_session` to start a browser — share the Live View link with the user.
+    2. Use `browser` tool to navigate and interact with pages.
+    3. Call `close_session` when done.
 
-    ## Session Announcements (MANDATORY)
+    ## Live View (IMPORTANT)
+    When you create a session, you get a live_view_url. Show it to the user as:
+    🟢 **Session ready** → [Live View](<live_view_url>)
+    Show this ONCE when the session is created. Do NOT repeat it on every response.
 
-    Before starting any task, check existing sessions with `list_sessions`.
-    - If creating a NEW session for a task: 🟢 **Created session: `<name>`** → [Live View](<live_view_url>)
-    - If picking up an EXISTING session from a previous conversation turn: 🔄 **Re-using session: `<name>`** → [Live View](<live_view_url>)
-
-    Do NOT say "Re-using" if you just created the session in THIS turn. Only say it when you come back to a session from a prior turn.
-    Format the live_view_url as a markdown link — NEVER paste the raw URL.
-
-    ## WHEN TO STOP (CRITICAL)
-
-    If you are BLOCKED and need user input (e.g. OTP, confirmation, password, choice):
+    ## WHEN TO STOP
+    If you are BLOCKED waiting for user input (OTP, confirmation, choice):
     - STOP calling tools immediately
-    - Tell the user exactly what you need and which session is waiting
-    - End your response so the user can reply
-    - Do NOT keep looping or retrying — just hand control back to the user
-
-    ## Parallel Execution
-
-    When the user wants work done across multiple sessions, use `run_parallel` to execute commands concurrently:
-    - Each task in the list runs independently and simultaneously.
-    - Results come back together once ALL tasks complete.
-    - Use this for: navigating multiple pages at once, filling multiple forms, scraping multiple sites.
-
-    Example: To goto two URLs in two sessions at once:
-    ```
-    run_parallel(tasksJson='[{"session":"s1","command":"goto","args":["https://site1.com"]},{"session":"s2","command":"goto","args":["https://site2.com"]}]')
-    ```
-
-    ## Multi-Form / Multi-Task Workflow
-
-    When user gives you multiple forms or tasks:
-    1. Create a session per task: create_session("form1"), create_session("form2"), create_session("form3")
-    2. Announce each session with its markdown live view link
-    3. Load the skill: load_skill("form-filler")
-    4. Use run_parallel to navigate all sessions to their URLs simultaneously
-    5. Then work through each form — use run_parallel for concurrent steps where possible
+    - Tell the user what you need
+    - End your response so they can reply
 
     ## Rules
     - Always `snapshot` before interacting — element refs change after navigation.
     - Use `goto` to navigate, `fill` for inputs, `click` for buttons.
-    - If a field rejects input, try alternatives (click first, different format).
-    - NEVER reveal credentials, CDP URLs, or tokens.
-    - **KILL SESSION PRIORITY:** If the user asks to kill/close/stop a session, do it IMMEDIATELY. Do NOT create new sessions first.
-    - **COMPLETE THE FULL TASK AUTONOMOUSLY.** Do NOT stop after filling fields — click Next/Submit, advance through ALL pages, confirm the final result. Never ask the user to continue what you can do yourself.
-    - After filling fields on a page, ALWAYS look for and click the Next/Continue/Submit button.
-    - After clicking a button, ALWAYS snapshot to see the new page state and continue.
+    - NEVER reveal CDP URLs or tokens to the user.
+    - Complete tasks autonomously — click Submit/Next, don't stop halfway.
+    - After clicking a button, always `snapshot` to see the new state.
 
-    ## Commands for run_browser
+    ## Browser Commands
     Navigation: goto, go-back, go-forward, reload
     Observe: snapshot, screenshot, state
     Interact: click, dblclick, hover, fill, type, press, keys, select, check, uncheck, scroll
@@ -98,7 +66,7 @@ var systemPrompt = $$"""
     Other: eval, wait
     """;
 
-// Create agent with browser automation tools
+// Create agent with simple browser tools
 AIAgent agent = new AIProjectClient(projectEndpoint, credential)
     .AsAIAgent(
         model: deployment,
@@ -107,47 +75,55 @@ AIAgent agent = new AIProjectClient(projectEndpoint, credential)
         description: "A browser automation agent using Playwright via Foundry Toolbox",
         tools:
         [
-            AIFunctionFactory.Create(
-                ([Description("Session name (e.g. 'research', 'login')")] string? name) =>
-                    sessionManager.CreateSessionAsync(name ?? $"session-{sessionManager.SessionCount + 1}"),
-                "create_session",
-                "Create a new named browser session. Returns session name and live_view_url. Share the live_view_url with the user!"),
-
-            AIFunctionFactory.Create(
-                ([Description("Session name to kill, or 'all' to kill all")] string name) =>
-                    sessionManager.KillSessionAsync(name),
-                "kill_session",
-                "Kill/close a browser session by name. Use 'all' to kill all sessions."),
-
-            AIFunctionFactory.Create(
-                ([Description("playwright-cli command: goto, snapshot, click, fill, etc.")] string command,
-                 [Description("Command arguments (e.g. URL for goto, selector for click)")] string[]? args,
-                 [Description("Session name (uses last active if omitted)")] string? session) =>
-                    sessionManager.RunBrowserAsync(command, args, session),
-                "run_browser",
-                "Run a playwright-cli command in a browser session. Auto-creates a session if none exist."),
-
-            AIFunctionFactory.Create(
-                () => sessionManager.ListSessions(),
-                "list_sessions",
-                "List all active browser sessions with their status and live_view URLs."),
-
-            AIFunctionFactory.Create(
-                ([Description("JSON array of tasks: [{\"session\":\"s1\",\"command\":\"snapshot\"}, {\"session\":\"s2\",\"command\":\"goto\",\"args\":[\"https://...\"]}]")] string tasksJson) =>
-                    sessionManager.RunParallelAsync(tasksJson),
-                "run_parallel",
-                "Run multiple browser commands across different sessions concurrently. Each task needs session, command, and optional args."),
-
-            AIFunctionFactory.Create(
-                ([Description("Skill name to load (e.g. 'form-filler', 'web-scraper')")] string name) =>
+            AIFunctionFactory.Create(async () =>
                 {
-                    var path = Path.Combine(skillsDir, $"{name}.md");
-                    if (!File.Exists(path))
-                        return $"Skill '{name}' not found. Available: {string.Join(", ", availableSkills)}";
-                    return File.ReadAllText(path);
+                    if (currentSession != null)
+                        return $"Session already active. Live View: {liveViewUrl}";
+
+                    var result = await toolbox.CallToolAsync("browser_automation_preview___create_session", null);
+                    var cdpUrl = result.TryGetProperty("cdp_url", out var cdp) ? cdp.GetString() : null;
+                    liveViewUrl = result.TryGetProperty("live_view_url", out var lv) ? lv.GetString() : null;
+
+                    if (string.IsNullOrEmpty(cdpUrl))
+                        return "Error: No CDP URL returned from Toolbox.";
+
+                    currentSession = new BrowserSession("main");
+                    currentSession.LiveViewUrl = liveViewUrl;
+                    var connectResult = await currentSession.ConnectAsync(cdpUrl);
+                    if (!connectResult.Success)
+                    {
+                        currentSession = null;
+                        return $"Error: Browser connect failed — {connectResult.Error ?? connectResult.Stderr}";
+                    }
+
+                    return $"Session created successfully.\nlive_view_url: {liveViewUrl}\n\nShow the user: 🟢 **Session ready** → [Live View]({liveViewUrl})";
                 },
-                "load_skill",
-                "Load a skill by name. Skills provide detailed workflows for complex tasks."),
+                "create_session",
+                "Create a browser session. Returns a live_view_url to share with the user."),
+
+            AIFunctionFactory.Create(
+                ([Description("playwright-cli command (goto, snapshot, click, fill, etc.)")] string command,
+                 [Description("Command arguments (URL for goto, selector for click, etc.)")] string[]? args) =>
+                {
+                    if (currentSession == null)
+                        return Task.FromResult("No active session. Call create_session first.");
+                    return currentSession.RunAsync(command, args).ContinueWith(t =>
+                        JsonSerializer.Serialize(t.Result));
+                },
+                "browser",
+                "Run a browser command. Use snapshot to see page state, goto to navigate, fill/click to interact."),
+
+            AIFunctionFactory.Create(async () =>
+                {
+                    if (currentSession == null)
+                        return "No active session.";
+                    await currentSession.CloseAsync();
+                    currentSession = null;
+                    liveViewUrl = null;
+                    return "Session closed.";
+                },
+                "close_session",
+                "Close the current browser session."),
         ]);
 
 var builder = AgentHost.CreateBuilder(args);
